@@ -11,7 +11,9 @@ import os
 import math
 import threading
 
+
 class SetterOperator(bpy.types.Operator):
+    """It set all of important variables."""
     bl_idname = "object.setter_operator"
     bl_label = "Set global variables"
 
@@ -19,12 +21,13 @@ class SetterOperator(bpy.types.Operator):
         setter_button(context)
         return {'FINISHED'}
 
+
 def menu_func(self, context):
     self.layout.operator(SetterOperator.bl_idname, text=SetterOperator.bl_label)
 
+
 def setter_button(context):
         # enable variables
-        bpy.context.scene.render.engine = 'CYCLES'
         bpy.context.scene.render.use_freestyle = True
         bpy.context.view_layer.freestyle_settings.as_render_pass = True
         bpy.context.view_layer.freestyle_settings.use_culling = True
@@ -84,19 +87,51 @@ def setter_button(context):
         # link shaders
         material.node_tree.links.new(material.node_tree.nodes['Emission'].outputs[0], material.node_tree.nodes['Material Output'].inputs[0])
         bpy.context.scene.is_set = True
+          
             
 class RenderOperator(bpy.types.Operator):
+    """Start render, but first check how long it will take.\n\nRender first time by yourself.\n\nEstimate time and then set avaliable variables up in panel, as you need."""
     bl_idname = "object.render_operator"
     bl_label = "Start render"
 
     def execute(self, context):
-        render_button(context)
+        val = render_button(context)
+        if val == 'RESET':
+            self.report({'ERROR'}, "Reset global variables, and do not change them")
         return {'FINISHED'}
+
 
 def menu_func(self, context):
     self.layout.operator(RenderOperator.bl_idname, text=RenderOperator.bl_label)
     
+    
 def render_button(context):
+    # validation 
+    if (bpy.context.scene.render.use_freestyle == False or
+        bpy.context.view_layer.freestyle_settings.as_render_pass == False or
+        bpy.context.view_layer.freestyle_settings.use_culling == False or
+        bpy.context.scene.use_nodes == False or 
+        bpy.data.materials['Blueprint'].use_nodes == False or
+        not (len(bpy.context.scene.node_tree.nodes) == 3 or len(bpy.context.scene.node_tree.nodes) == 4) or
+        len(bpy.data.materials['Blueprint'].node_tree.nodes) != 2):
+        bpy.context.scene.is_set = False        
+        return 'RESET'
+    
+    shader_nodes = bpy.data.materials['Blueprint'].node_tree.nodes
+    for node in shader_nodes:
+        if not (node.name == 'Emission' or node.name == 'Material Output'):
+            bpy.context.scene.is_set = False
+            return 'RESET'
+    
+    compositor_nodes = bpy.context.scene.node_tree.nodes
+    for node in compositor_nodes:
+        if not (node.name == 'Alpha Over' or
+            node.name == 'File Output' or
+            node.name == 'Mix' or
+            node.name == 'Render Layers'):
+            bpy.context.scene.is_set = False
+            return 'RESET'
+    
     bpy.context.scene.is_rendering = True
     
     # reuse validation
@@ -124,6 +159,7 @@ def render_button(context):
         
     thread = threading.Thread(target=thread_menager)    
     thread.start()
+    
         
 def thread_menager():
     output_alpha = bpy.context.scene.node_tree.nodes['Alpha Over'].outputs[0]
@@ -132,6 +168,16 @@ def thread_menager():
     path = bpy.context.scene.render.filepath
     crease_value = bpy.context.scene.start_value
     
+    # enable engine settings
+    if bpy.context.scene.use_cycles:
+        bpy.context.scene.render.engine = 'CYCLES'
+        if bpy.context.scene.use_gpu:
+            bpy.context.scene.cycles.device = 'GPU'
+        else:
+            bpy.context.scene.cycles.device = 'CPU'
+    else:
+         bpy.context.scene.render.engine = 'BLENDER_EEVEE' 
+         
     if bpy.context.scene.steps > 1:
         step = (bpy.context.scene.stop_value - crease_value) / (bpy.context.scene.steps - 1)
     else:
@@ -151,8 +197,8 @@ def thread_menager():
         thread.start()
         thread.join()
     bpy.context.scene.is_rendering = False
-    print(bpy.context.scene.is_rendering)
-
+    
+    
 def rendering_thread():
     bpy.ops.render.render(write_still = True)
     return    
@@ -169,6 +215,12 @@ class BlueprintPanel(bpy.types.Panel):
         layout = self.layout
 
         scene = context.scene
+        
+        cycles = layout.row()
+        cycles.prop(scene, "use_cycles", text = "CYCLES")
+        
+        gpu = layout.row()
+        gpu.prop(scene, "use_gpu", text = "GPU")
         
         setter_button = layout.row()
         setter_button.operator("object.setter_operator")
@@ -192,18 +244,32 @@ class BlueprintPanel(bpy.types.Panel):
         if bpy.context.scene.is_set == False or bpy.context.scene.is_rendering == True:
             render_button.enabled = False   
             
+        if bpy.context.scene.use_cycles:
+            gpu.enabled = True
+        else:
+            gpu.enabled = False
+        
         if bpy.context.scene.is_rendering == True:
             setter_button.enabled = False
             sta.enabled = False
             sto.enabled = False
             ste.enabled = False
-            thick.enabled = False  
+            thick.enabled = False
+            cycles.enabled = False
+            gpu.enabled = False
+            
         if bpy.context.scene.is_rendering == False:
             setter_button.enabled = True
             sta.enabled = True
             sto.enabled = True
             ste.enabled = True
             thick.enabled = True
+            cycles.enabled = True
+            if bpy.context.scene.use_cycles:
+                gpu.enabled = True
+            else:
+                gpu.enabled = False
+
 
 def register():
     bpy.utils.register_class(BlueprintPanel)
@@ -216,6 +282,13 @@ def register():
     bpy.types.Scene.render_thickness = bpy.props.FloatProperty(default = 1, min = 0)     
     bpy.types.Scene.is_set = bpy.props.BoolProperty(default = False)
     bpy.types.Scene.is_rendering = bpy.props.BoolProperty(default = False)
+    bpy.types.Scene.use_cycles = bpy.props.BoolProperty(
+        description = "Use it to render big projects.\nEEVEE is good enough to draw few lines.",
+        default = False,)
+    bpy.types.Scene.use_gpu = bpy.props.BoolProperty(
+        description = "Use it if your GPU is strong,\notherwise this will elongate render process",
+        default = False)
+         
             
 def unregister():
     bpy.utils.unregister_class(BlueprintPanel)
